@@ -22,7 +22,7 @@ if ! pacman -Qs cctz > /dev/null ; then
     else
         echo "⚠️ Внимание: Не найден AUR-хелпер (paru или yay). Сборка может упасть без cctz."
     fi
-fi
+figit a
 
 echo "--- 🧹 Очистка старого билда ---"
 # Очищаем папку сборки, чтобы CMake подхватил системные пакеты, а не пытался качать их сам
@@ -54,6 +54,10 @@ fi
 
 echo "--- 🏗 Сборка сервера ---"
 cmake --build "$BUILD_DIR" --target auracloud_userver -j$(nproc)
+
+echo "--- 🖥 Сборка клиента (GUI + MCP) ---"
+cmake -S . -B build_client -DAURAHUB_BUILD_USERVER=OFF -DAURAHUB_BUILD_CLIENT=ON -DAURAHUB_BUILD_TESTS=OFF
+cmake --build build_client --target auraclient_gui auraclient_mcp_host -j$(nproc)
 
 echo "--- ✅ Билд завершен! ---"
 echo "Теперь можно запускать ./scripts/demo_agent_approval.sh"
