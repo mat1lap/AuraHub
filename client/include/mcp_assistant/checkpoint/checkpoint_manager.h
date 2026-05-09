@@ -4,6 +4,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 namespace aura::mcp_assistant::checkpoint {
 
@@ -19,14 +20,17 @@ class CheckpointManager final : public QObject {
 
   [[nodiscard]] QString WorkspaceRoot() const { return workspace_root_; }
 
-  /// Captures a filesystem snapshot and registers metadata.
-  CheckpointRecord CreateCheckpoint(QString user_prompt_excerpt, QString summary);
+  /// Copies only `relative_paths` under workspace into the snapshot (async; never blocks GUI).
+  /// Empty list stores metadata-only checkpoint (no tree files).
+  void CreateCheckpointAsync(QString user_prompt_excerpt, QString summary,
+                             QStringList relative_paths_under_workspace);
 
   /// Asynchronous rollback from snapshot `checkpoint_id`.
   void RollbackAsync(qint64 checkpoint_id);
 
  signals:
   void CheckpointCreated(CheckpointRecord record);
+  void CheckpointCreationFailed(QString error_message);
   void RollbackFinished(qint64 checkpoint_id, bool ok, QString error_message);
 
  private:

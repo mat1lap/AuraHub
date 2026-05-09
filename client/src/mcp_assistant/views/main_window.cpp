@@ -121,6 +121,8 @@ void MainWindow::SetSessionController(services::AssistantSessionController* cont
   }
   connect(controller_, &services::AssistantSessionController::PendingApprovalChanged, this,
           &MainWindow::OnPendingApprovalChanged);
+  connect(controller_, &services::AssistantSessionController::InteractionGateChanged, this,
+          &MainWindow::OnInteractionGateChanged);
   connect(controller_, &services::AssistantSessionController::TokenUsageChanged, this,
           [this](int p, int c) {
             status_tokens_->setText(tr("tokens ~ %1 / %2").arg(p).arg(c));
@@ -133,6 +135,8 @@ void MainWindow::SetSessionController(services::AssistantSessionController* cont
                         : QStringLiteral("color:#ffb020;font-weight:600;"));
             reconnect_badge_->setText(healthy ? tr("● live") : tr("● reconnecting"));
           });
+  OnInteractionGateChanged(controller_->CanSendPrompt());
+  RefreshApprovalUi();
 }
 
 void MainWindow::SetChatModel(chat::ChatMessagesModel* model) {
@@ -168,7 +172,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void MainWindow::OnSendClicked() {
-  if (controller_ == nullptr) {
+  if (controller_ == nullptr || !controller_->CanSendPrompt()) {
     return;
   }
   const QString text = prompt_->toPlainText();
@@ -194,12 +198,29 @@ void MainWindow::OnConnectToggled(bool checked) {
 }
 
 void MainWindow::OnPendingApprovalChanged(bool active) {
-  diff_->setEnabled(active);
-  if (!active || controller_ == nullptr) {
-    diff_->Clear();
+  Q_UNUSED(active);
+  RefreshApprovalUi();
+}
+
+void MainWindow::OnInteractionGateChanged(bool can_send_message) {
+  prompt_->setEnabled(can_send_message);
+  send_btn_->setEnabled(can_send_message);
+  RefreshApprovalUi();
+}
+
+void MainWindow::RefreshApprovalUi() {
+  if (controller_ == nullptr) {
     return;
   }
-  diff_->SetPendingChange(controller_->CurrentPending());
+  const bool show = controller_->HasPendingApproval();
+  const bool locked = controller_->IsSavingCheckpoint();
+  if (show && !locked) {
+    diff_->setEnabled(true);
+    diff_->SetPendingChange(controller_->CurrentPending());
+    return;
+  }
+  diff_->setEnabled(false);
+  diff_->Clear();
 }
 
 void MainWindow::OnCheckpointRollbackClicked() {

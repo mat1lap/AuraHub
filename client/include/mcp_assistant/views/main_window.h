@@ -46,6 +46,7 @@ class MainWindow final : public QMainWindow {
   void OnCancelClicked();
   void OnConnectToggled(bool checked);
   void OnPendingApprovalChanged(bool active);
+  void OnInteractionGateChanged(bool can_send_message);
   void OnCheckpointRollbackClicked();
   void OnDiffAccepted();
   void OnDiffRejected();
@@ -53,6 +54,7 @@ class MainWindow final : public QMainWindow {
 
  private:
   void ScrollChatToBottom();
+  void RefreshApprovalUi();
 
   services::AssistantSessionController* controller_{nullptr};
   chat::ChatMessagesModel* chat_model_{nullptr};

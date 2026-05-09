@@ -9,6 +9,8 @@
 #include <QStandardPaths>
 #include <QtConcurrent/QtConcurrent>
 
+#include <memory>
+
 namespace aura::mcp_assistant::checkpoint {
 
 namespace {
@@ -29,31 +31,15 @@ bool ShouldSkipDir(const QString& name) {
   return false;
 }
 
-bool CopyRecursiveFiltered(const QString& src_root, const QString& dst_root) {
-  QDir().mkpath(dst_root);
-  QDirIterator it(src_root, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot,
-                  QDirIterator::Subdirectories);
-  while (it.hasNext()) {
-    const QString path = it.next();
-    QFileInfo fi(path);
-    const QString rel = QDir(src_root).relativeFilePath(path);
-    if (RelPathHasSkippedComponent(rel)) {
-      continue;
-    }
-    if (fi.isDir()) {
-      QDir().mkpath(dst_root + QLatin1Char('/') + rel);
-      continue;
-    }
-    const QString dest_path = dst_root + QLatin1Char('/') + rel;
-    QDir().mkpath(QFileInfo(dest_path).absolutePath());
-    if (QFile::exists(dest_path)) {
-      QFile::remove(dest_path);
-    }
-    if (!QFile::copy(path, dest_path)) {
-      return false;
-    }
+[[nodiscard]] bool IsSafeRelativePath(QString rel) {
+  if (rel.isEmpty() || rel.contains(QLatin1String(".."))) {
+    return false;
   }
-  return true;
+  const QFileInfo fi(rel);
+  if (fi.isAbsolute()) {
+    return false;
+  }
+  return !RelPathHasSkippedComponent(rel);
 }
 
 }  // namespace
@@ -73,26 +59,84 @@ QString CheckpointManager::SnapshotDirForId(qint64 id) const {
   return snapshot_store_root_ + QStringLiteral("/cp_%1").arg(id);
 }
 
-CheckpointRecord CheckpointManager::CreateCheckpoint(QString user_prompt_excerpt,
-                                                    QString summary) {
-  CheckpointRecord rec;
-  rec.id = next_id_++;
-  rec.created_epoch_ms =
-      QDateTime::currentMSecsSinceEpoch();
-  rec.user_prompt_excerpt = std::move(user_prompt_excerpt);
-  rec.summary = std::move(summary);
-  rec.storage_ref = SnapshotDirForId(rec.id);
-  rec.storage = CheckpointStorageKind::FilesystemSnapshot;
-
-  const QString snap_dir = rec.storage_ref;
-  QDir().mkpath(snap_dir);
-
-  if (!workspace_root_.isEmpty()) {
-    CopyRecursiveFiltered(workspace_root_, snap_dir + QStringLiteral("/tree"));
+void CheckpointManager::CreateCheckpointAsync(QString user_prompt_excerpt, QString summary,
+                                              QStringList relative_paths_under_workspace) {
+  if (workspace_root_.isEmpty()) {
+    emit CheckpointCreationFailed(QStringLiteral("Workspace root is not set."));
+    return;
   }
 
-  emit CheckpointCreated(rec);
-  return rec;
+  const qint64 id = next_id_++;
+  const QString snap_dir = SnapshotDirForId(id);
+  const qint64 created_ms = QDateTime::currentMSecsSinceEpoch();
+  const QString workspace = workspace_root_;
+
+  QStringList paths_clean;
+  paths_clean.reserve(relative_paths_under_workspace.size());
+  for (QString rel : relative_paths_under_workspace) {
+    rel = rel.trimmed();
+    if (IsSafeRelativePath(rel)) {
+      paths_clean.push_back(rel);
+    }
+  }
+
+  auto record_out = std::make_shared<CheckpointRecord>();
+
+  auto future = QtConcurrent::run(
+      [=, prompt = std::move(user_prompt_excerpt), sum = std::move(summary)]() mutable
+      -> std::pair<bool, QString> {
+        CheckpointRecord rec;
+        rec.id = id;
+        rec.created_epoch_ms = created_ms;
+        rec.user_prompt_excerpt = std::move(prompt);
+        rec.summary = std::move(sum);
+        rec.storage_ref = snap_dir;
+        rec.storage = CheckpointStorageKind::FilesystemSnapshot;
+
+        QDir().mkpath(snap_dir);
+        const QString tree = snap_dir + QStringLiteral("/tree");
+
+        if (paths_clean.isEmpty()) {
+          QDir().mkpath(tree);
+          QFile marker(tree + QStringLiteral("/.checkpoint_empty"));
+          if (marker.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            marker.write("\n");
+          }
+          *record_out = rec;
+          return {true, QString()};
+        }
+
+        QDir().mkpath(tree);
+        for (const QString& rel : paths_clean) {
+          const QString src = QDir(workspace).filePath(rel);
+          const QString dst = tree + QLatin1Char('/') + rel;
+          QDir().mkpath(QFileInfo(dst).absolutePath());
+          if (!QFile::exists(src)) {
+            continue;
+          }
+          if (QFile::exists(dst)) {
+            QFile::remove(dst);
+          }
+          if (!QFile::copy(src, dst)) {
+            return {false, QStringLiteral("Failed to snapshot: %1").arg(rel)};
+          }
+        }
+        *record_out = rec;
+        return {true, QString()};
+      });
+
+  auto* watcher = new QFutureWatcher<std::pair<bool, QString>>(this);
+  connect(watcher, &QFutureWatcher<std::pair<bool, QString>>::finished, this,
+          [this, watcher, record_out]() {
+            const auto [ok, err] = watcher->result();
+            watcher->deleteLater();
+            if (!ok) {
+              emit CheckpointCreationFailed(err);
+              return;
+            }
+            emit CheckpointCreated(*record_out);
+          });
+  watcher->setFuture(future);
 }
 
 void CheckpointManager::RollbackAsync(qint64 checkpoint_id) {
@@ -112,6 +156,9 @@ void CheckpointManager::RollbackAsync(qint64 checkpoint_id) {
       const QString src_path = it.next();
       QFileInfo fi(src_path);
       const QString rel = QDir(tree).relativeFilePath(src_path);
+      if (rel == QStringLiteral(".checkpoint_empty")) {
+        continue;
+      }
       const QString dst_path = workspace_root_ + QLatin1Char('/') + rel;
       if (fi.isDir()) {
         QDir().mkpath(dst_path);

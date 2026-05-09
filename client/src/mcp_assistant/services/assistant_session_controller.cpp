@@ -5,10 +5,40 @@
 #include "mcp_assistant/checkpoint/checkpoint_manager.h"
 #include "mcp_assistant/mcp/mcp_client.h"
 
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonObject>
 
 namespace aura::mcp_assistant::services {
+
+namespace {
+
+[[nodiscard]] bool RelPathHasSkippedComponent(const QString& rel) {
+  const QStringList parts =
+      rel.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+  for (const QString& part : parts) {
+    if (part == QStringLiteral(".git") || part == QStringLiteral("build") ||
+        part == QStringLiteral("cmake-build-debug") || part == QStringLiteral("node_modules")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+bool AssistantSessionController::RelativePathIsSafe(const QString& rel) const {
+  if (rel.isEmpty() || rel.contains(QLatin1String(".."))) {
+    return false;
+  }
+  const QFileInfo fi(rel);
+  if (fi.isAbsolute()) {
+    return false;
+  }
+  return !RelPathHasSkippedComponent(rel);
+}
 
 AssistantSessionController::AssistantSessionController(
     chat::ChatMessagesModel* chat_model, checkpoint::CheckpointListModel* checkpoint_model,
@@ -40,6 +70,24 @@ AssistantSessionController::AssistantSessionController(
   connect(checkpoint_manager_, &checkpoint::CheckpointManager::CheckpointCreated, this,
           [this](checkpoint::CheckpointRecord rec) {
             checkpoint_model_->UpsertCheckpoint(rec);
+            if (pending_approval_checkpoint_) {
+              pending_approval_checkpoint_ = false;
+              checkpoint_busy_ = false;
+              chat_model_->AppendCheckpointCard(rec.summary, rec.id);
+              chat_model_->AppendSystemMessage(
+                  QStringLiteral("Checkpoint %1 saved.").arg(rec.id));
+              ClearPending();
+            }
+          });
+  connect(checkpoint_manager_, &checkpoint::CheckpointManager::CheckpointCreationFailed, this,
+          [this](QString err) {
+            if (pending_approval_checkpoint_) {
+              pending_approval_checkpoint_ = false;
+              checkpoint_busy_ = false;
+              chat_model_->AppendSystemMessage(
+                  QStringLiteral("Checkpoint failed: %1").arg(err));
+              emit InteractionGateChanged(CanSendPrompt());
+            }
           });
   connect(checkpoint_manager_, &checkpoint::CheckpointManager::RollbackFinished, this,
           &AssistantSessionController::OnRollbackFinished);
@@ -58,6 +106,16 @@ void AssistantSessionController::SetWorkspaceRoot(QString absolute_path) {
 void AssistantSessionController::SubmitPrompt(QString text) {
   const QString trimmed = text.trimmed();
   if (trimmed.isEmpty()) {
+    return;
+  }
+
+  if (pending_.has_value()) {
+    chat_model_->AppendSystemMessage(
+        QStringLiteral("Accept or reject pending changes before sending a new message."));
+    return;
+  }
+  if (checkpoint_busy_) {
+    chat_model_->AppendSystemMessage(QStringLiteral("Checkpoint is still being saved…"));
     return;
   }
 
@@ -80,26 +138,85 @@ void AssistantSessionController::CancelActiveRequest() {
   chat_model_->SetTypingIndicator(false);
 }
 
+bool AssistantSessionController::WriteApprovedFilesToWorkspace() {
+  if (!pending_.has_value() || workspace_root_.isEmpty()) {
+    return false;
+  }
+  for (const FilePatch& fp : pending_->files) {
+    if (!RelativePathIsSafe(fp.relative_path)) {
+      continue;
+    }
+    const QString path = QDir(workspace_root_).filePath(fp.relative_path);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+      return false;
+    }
+    f.write(fp.after_text.toUtf8());
+  }
+  return true;
+}
+
+bool AssistantSessionController::RestoreRejectedFilesOnWorkspace() {
+  if (!pending_.has_value() || workspace_root_.isEmpty()) {
+    return false;
+  }
+  for (const FilePatch& fp : pending_->files) {
+    if (!RelativePathIsSafe(fp.relative_path)) {
+      continue;
+    }
+    const QString path = QDir(workspace_root_).filePath(fp.relative_path);
+    if (fp.before_text.isEmpty()) {
+      QFile::remove(path);
+      continue;
+    }
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+      return false;
+    }
+    f.write(fp.before_text.toUtf8());
+  }
+  return true;
+}
+
 void AssistantSessionController::ApprovePendingChange() {
-  if (!pending_.has_value()) {
+  if (!pending_.has_value() || checkpoint_busy_) {
     return;
   }
+
+  QStringList paths;
+  paths.reserve(static_cast<int>(pending_->files.size()));
+  for (const FilePatch& fp : pending_->files) {
+    if (RelativePathIsSafe(fp.relative_path)) {
+      paths.append(fp.relative_path);
+    }
+  }
+
+  if (!WriteApprovedFilesToWorkspace()) {
+    chat_model_->AppendSystemMessage(
+        QStringLiteral("Failed to write approved content to the workspace."));
+    return;
+  }
+
+  checkpoint_busy_ = true;
+  pending_approval_checkpoint_ = true;
+  emit InteractionGateChanged(CanSendPrompt());
+
   const QString excerpt = pending_->title;
-  const checkpoint::CheckpointRecord rec =
-      checkpoint_manager_->CreateCheckpoint(excerpt, QStringLiteral("Applied proposal"));
-
-  chat_model_->AppendCheckpointCard(rec.summary, rec.id);
-  chat_model_->AppendSystemMessage(
-      QStringLiteral("Checkpoint %1 saved.").arg(rec.id));
-
-  ClearPending();
+  checkpoint_manager_->CreateCheckpointAsync(excerpt, QStringLiteral("Applied proposal"), paths);
 }
 
 void AssistantSessionController::RejectPendingChange() {
-  if (!pending_.has_value()) {
+  if (!pending_.has_value() || checkpoint_busy_) {
     return;
   }
-  chat_model_->AppendSystemMessage(QStringLiteral("Changes rejected."));
+  if (!RestoreRejectedFilesOnWorkspace()) {
+    chat_model_->AppendSystemMessage(
+        QStringLiteral("Failed to restore workspace files; check permissions."));
+  } else {
+    chat_model_->AppendSystemMessage(QStringLiteral("Changes rejected."));
+  }
   ClearPending();
 }
 
@@ -156,6 +273,7 @@ void AssistantSessionController::OnPromptResult(QJsonObject result) {
   chat_model_->AppendApprovalPrompt(pc.id,
                                     QStringLiteral("Review agent changes before checkpoint."));
   emit PendingApprovalChanged(true);
+  emit InteractionGateChanged(CanSendPrompt());
 }
 
 void AssistantSessionController::OnJsonRpcError(int code, QString message, QJsonValue id) {
@@ -179,6 +297,7 @@ void AssistantSessionController::OnRollbackFinished(qint64 checkpoint_id, bool o
 void AssistantSessionController::ClearPending() {
   pending_.reset();
   emit PendingApprovalChanged(false);
+  emit InteractionGateChanged(CanSendPrompt());
 }
 
 void AssistantSessionController::EnsureDemoApprovalOffer(const QString& assistant_markdown,
@@ -208,6 +327,7 @@ void AssistantSessionController::EnsureDemoApprovalOffer(const QString& assistan
   chat_model_->AppendApprovalPrompt(pc.id,
                                     QStringLiteral("Review proposed edits before applying."));
   emit PendingApprovalChanged(true);
+  emit InteractionGateChanged(CanSendPrompt());
 }
 
 }  // namespace aura::mcp_assistant::services

@@ -36,6 +36,12 @@ class AssistantSessionController final : public QObject {
 
   [[nodiscard]] bool HasPendingApproval() const { return pending_.has_value(); }
 
+  [[nodiscard]] bool CanSendPrompt() const {
+    return !pending_.has_value() && !checkpoint_busy_;
+  }
+
+  [[nodiscard]] bool IsSavingCheckpoint() const { return checkpoint_busy_; }
+
   [[nodiscard]] PendingChange CurrentPending() const {
     return pending_.value_or(PendingChange{});
   }
@@ -59,11 +65,16 @@ class AssistantSessionController final : public QObject {
 
  signals:
   void PendingApprovalChanged(bool active);
+  /// Enables/disables sending prompts (blocked while approval pending or checkpoint saving).
+  void InteractionGateChanged(bool can_send_message);
   void TokenUsageChanged(int prompt_tokens, int completion_tokens);
   void ConnectionSummaryChanged(QString text, bool healthy);
 
  private:
   void ClearPending();
+  bool WriteApprovedFilesToWorkspace();
+  bool RestoreRejectedFilesOnWorkspace();
+  [[nodiscard]] bool RelativePathIsSafe(const QString& rel) const;
   void EnsureDemoApprovalOffer(const QString& assistant_markdown, const QString& user_prompt);
 
   chat::ChatMessagesModel* chat_model_{nullptr};
@@ -76,6 +87,9 @@ class AssistantSessionController final : public QObject {
   qint64 next_pending_id_{1};
 
   QString streaming_buffer_;
+
+  bool checkpoint_busy_{false};
+  bool pending_approval_checkpoint_{false};
 };
 
 }  // namespace aura::mcp_assistant::services
