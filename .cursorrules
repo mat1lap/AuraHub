@@ -1,0 +1,40 @@
+# AuraHub AI Agent Instructions & Guidelines
+
+## Project Context
+You are working on AuraHub, a cross-platform desktop GUI application acting as a visual alternative to CLI AI agents (like Claude Code). 
+The killer feature is the "Time Machine": a local rollback engine that tracks AI actions and can atomically revert file system changes.
+
+## Tech Stack & Project Structure
+- Language: C++20
+- Build System: CMake
+- Frontend (Client): Qt 6 (Widgets), SQLite (Qt SQL)
+- Backend (Server): userver framework, PostgreSQL
+- Core Library: AuraMCP (Local Model Context Protocol implementation)
+
+## Architectural Boundaries (STRICT)
+
+### 1. Client App (/client)
+- Pattern: strictly MVP (Model-View-Presenter).
+- View: Dumb Qt Widgets (QAbstractTableModel, QSortFilterProxyModel). NO business logic or database calls here.
+- Model: Contains McpEngine (AI execution), LocalDbService (SQLite), and NetworkGateway (REST HTTP). 
+- Rollback Engine: All file modifications made by AI MUST be backed up to the local SQLite database as diffs/blobs *before* execution.
+- Network: The client NEVER connects to PostgreSQL directly. All cloud synchronization goes through the userver REST API.
+
+### 2. Server App (/server)
+- Framework: userver ONLY. No blocking I/O operations.
+- Responsibility: Auth (JWT), storing secure password hashes (Bcrypt/SHA-3), LLM API Proxying, and user settings sync.
+
+### 3. AuraMCP Core (/mcp)
+- Concurrency: Lock-free execution phase. Do NOT use std::mutex in hot paths (execute, read). State is immutable after initialization.
+- Error Handling: NO runtime exceptions. Do NOT throw std::out_of_range or json::parse_error. Use ToolResult structures with isError = true.
+- Parsing: Use the custom jsonrpc::JsonRpcParser with std::variant and std::visit. Do not use raw nlohmann::json parsing in the router.
+- Transport: StdioTransport::start() MUST be blocking (run in the main thread loop) to prevent immediate process termination.
+
+## Coding Style
+- Follow the Google C++ Style Guide.
+- Use .clang-format rules.
+- Memory: Use smart pointers (std::unique_ptr, std::shared_ptr) for business logic. Raw pointers are ONLY acceptable for Qt objects managed by the QObject parent-child tree.
+
+## Self-Correction & Error Memory Loop (CRITICAL)
+Before writing code or debugging, you MUST review the docs/MEMEX_ERRORS.md file to avoid repeating past mistakes.
+If you encounter a new error, bug, or architectural friction more than once, you MUST automatically update docs/MEMEX_ERRORS.md with the symptom, cause, and established solution. Do not ask for permission to update the memex, just do it.

@@ -1,0 +1,12 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: aurahub
+      POSTGRES_PASSWORD: aurahub
+      POSTGRES_DB: aurahub
+    ports:
+      - "15432:5432"
+    volumes:
+      - ../postgres/init:/docker-entrypoint-initdb.d:ro
+
