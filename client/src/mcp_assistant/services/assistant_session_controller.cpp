@@ -5,6 +5,7 @@
 #include "mcp_assistant/checkpoint/checkpoint_manager.h"
 #include "mcp_assistant/mcp/mcp_client.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 
 namespace aura::mcp_assistant::services {
@@ -42,6 +43,11 @@ AssistantSessionController::AssistantSessionController(
           });
   connect(checkpoint_manager_, &checkpoint::CheckpointManager::RollbackFinished, this,
           &AssistantSessionController::OnRollbackFinished);
+
+  connect(mcp_client_, &mcp::McpClient::PromptResult, this,
+          &AssistantSessionController::OnPromptResult);
+  connect(mcp_client_, &mcp::McpClient::JsonRpcError, this,
+          &AssistantSessionController::OnJsonRpcError);
 }
 
 void AssistantSessionController::SetWorkspaceRoot(QString absolute_path) {
@@ -114,6 +120,49 @@ void AssistantSessionController::OnAssistantCompleted(QString full_text) {
 void AssistantSessionController::OnAssistantDelta(QString chunk) {
   streaming_buffer_.append(chunk);
   Q_UNUSED(chunk);
+}
+
+void AssistantSessionController::OnPromptResult(QJsonObject result) {
+  if (!result.value(QStringLiteral("needs_approval")).toBool()) {
+    return;
+  }
+
+  const QJsonObject diff = result.value(QStringLiteral("diff")).toObject();
+  PendingChange pc;
+  pc.id = next_pending_id_++;
+  pc.title = diff.value(QStringLiteral("title")).toString();
+  if (pc.title.isEmpty()) {
+    pc.title = QStringLiteral("Agent changes");
+  }
+
+  const QJsonArray files = diff.value(QStringLiteral("files")).toArray();
+  for (const QJsonValue& v : files) {
+    const QJsonObject f = v.toObject();
+    FilePatch fp;
+    fp.relative_path = f.value(QStringLiteral("path")).toString();
+    fp.before_text = f.value(QStringLiteral("before")).toString();
+    fp.after_text = f.value(QStringLiteral("after")).toString();
+    if (fp.relative_path.isEmpty()) {
+      continue;
+    }
+    pc.files.push_back(fp);
+  }
+
+  if (pc.files.isEmpty()) {
+    return;
+  }
+
+  pending_ = pc;
+  chat_model_->AppendApprovalPrompt(pc.id,
+                                    QStringLiteral("Review agent changes before checkpoint."));
+  emit PendingApprovalChanged(true);
+}
+
+void AssistantSessionController::OnJsonRpcError(int code, QString message, QJsonValue id) {
+  Q_UNUSED(id);
+  chat_model_->SetTypingIndicator(false);
+  chat_model_->AppendSystemMessage(
+      QStringLiteral("MCP error %1: %2").arg(code).arg(message));
 }
 
 void AssistantSessionController::OnRollbackFinished(qint64 checkpoint_id, bool ok,

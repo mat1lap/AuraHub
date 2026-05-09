@@ -2,6 +2,8 @@
 
 #include "pending_change.h"
 
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QObject>
 #include <QString>
 
@@ -51,6 +53,8 @@ class AssistantSessionController final : public QObject {
  private slots:
   void OnAssistantCompleted(QString full_text);
   void OnAssistantDelta(QString chunk);
+  void OnPromptResult(QJsonObject result);
+  void OnJsonRpcError(int code, QString message, QJsonValue id);
   void OnRollbackFinished(qint64 checkpoint_id, bool ok, QString error);
 
  signals:

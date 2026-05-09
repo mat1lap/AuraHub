@@ -36,6 +36,8 @@ class McpClient final : public QObject {
   void ConnectionStateChanged(bool connected);
   void AssistantDelta(QString chunk);
   void AssistantMessageCompleted(QString full_text);
+  /// Emitted after `messages/prompt` with the JSON **result** object (diff / flags).
+  void PromptResult(QJsonObject result);
   void ToolCallReceived(QString tool_name, QJsonObject arguments);
   void StreamingFinished();
   void JsonRpcError(int code, QString message, QJsonValue id);

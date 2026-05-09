@@ -23,3 +23,10 @@ add_executable(auramcp_stdio_server
 )
 target_link_libraries(auramcp_stdio_server PRIVATE aurahub_warnings auramcp)
 
+# Stdio test agent for MCP Assistant GUI (append-only log + diff payload).
+add_executable(aurahub_test_mcp_agent
+  src/test_mcp_agent_main.cpp
+)
+target_link_libraries(aurahub_test_mcp_agent PRIVATE aurahub_warnings auramcp)
+target_compile_features(aurahub_test_mcp_agent PRIVATE cxx_std_20)
+

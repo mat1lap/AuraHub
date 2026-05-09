@@ -156,33 +156,57 @@ void McpClient::HandleIncomingObject(const QJsonObject& object) {
     return;
   }
 
-  if (object.contains(QStringLiteral("result")) || object.contains(QStringLiteral("error"))) {
-    const QJsonValue id_val = object.value(QStringLiteral("id"));
-    int id = -1;
-    if (id_val.isDouble()) {
-      id = id_val.toInt();
-    } else if (id_val.isString()) {
-      id = id_val.toString().toInt();
+  const QJsonValue id_val = object.value(QStringLiteral("id"));
+  int id = -1;
+  if (id_val.isDouble()) {
+    id = static_cast<int>(id_val.toDouble());
+  } else if (id_val.isString()) {
+    bool ok = false;
+    id = id_val.toString().toInt(&ok);
+    if (!ok) {
+      id = -1;
     }
-    if (object.contains(QStringLiteral("error"))) {
-      const QJsonObject err = object.value(QStringLiteral("error")).toObject();
-      emit JsonRpcError(err.value(QStringLiteral("code")).toInt(),
-                        err.value(QStringLiteral("message")).toString(), id_val);
-      if (id >= 0) {
-        pending_methods_.remove(id);
-      }
-      return;
-    }
+  }
 
-    const QJsonObject result = object.value(QStringLiteral("result")).toObject();
-    Q_UNUSED(result);
+  if (object.contains(QStringLiteral("error"))) {
+    const QJsonObject err = object.value(QStringLiteral("error")).toObject();
+    emit JsonRpcError(err.value(QStringLiteral("code")).toInt(),
+                      err.value(QStringLiteral("message")).toString(), id_val);
     if (id >= 0) {
       pending_methods_.remove(id);
     }
-    emit AssistantMessageCompleted(QString::fromUtf8(
-        QJsonDocument(object).toJson(QJsonDocument::Compact)));
-    emit TokenUsageEstimate(0, 0);
+    return;
   }
+
+  if (!object.contains(QStringLiteral("result"))) {
+    return;
+  }
+
+  const QJsonObject result = object.value(QStringLiteral("result")).toObject();
+
+  QString pending_method;
+  if (id >= 0 && pending_methods_.contains(id)) {
+    pending_method = pending_methods_.take(id);
+  }
+
+  if (pending_method == QStringLiteral("messages/prompt")) {
+    QString text = result.value(QStringLiteral("assistant_markdown")).toString();
+    if (text.isEmpty()) {
+      text = result.value(QStringLiteral("message")).toString();
+    }
+    if (text.isEmpty()) {
+      text = QString::fromUtf8(
+          QJsonDocument(result).toJson(QJsonDocument::Compact));
+    }
+    emit AssistantMessageCompleted(text);
+    emit PromptResult(result);
+    emit TokenUsageEstimate(0, 0);
+    return;
+  }
+
+  emit AssistantMessageCompleted(QString::fromUtf8(
+      QJsonDocument(object).toJson(QJsonDocument::Compact)));
+  emit TokenUsageEstimate(0, 0);
 }
 
 void McpClient::ResetReconnectBackoff() { reconnect_current_ms_ = reconnect_delay_ms_; }

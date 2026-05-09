@@ -45,8 +45,11 @@ int main(int argc, char** argv) {
   controller->SetWorkspaceRoot(QDir::currentPath());
 
   chat_model->AppendSystemMessage(
-      QStringLiteral("MCP Assistant shell — demo mode when stdio transport is offline. "
-                      "Set AURA_MCP_PROGRAM (+ optional AURA_MCP_ARGS) to connect."));
+      QStringLiteral(
+          "MCP Assistant — offline demo unless connected.\n"
+          "Test agent (stdio): set AURA_MCP_PROGRAM to "
+          "build/mcp/aurahub_test_mcp_agent (built target). "
+          "Workspace for file edits = current directory; optional AURA_TEST_AGENT_FILE."));
 
   aura::mcp_assistant::views::MainWindow window;
   window.SetChatModel(chat_model);
