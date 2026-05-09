@@ -1,0 +1,21 @@
+.cache/
+.idea/
+.vscode/
+build/
+build2/
+build_client/
+build_gui_run/
+build_userver/
+build_userver2/
+cmake-build-*/
+out/
+
+# Qt / moc / rcc / uic artifacts
+**/moc_*.cpp
+**/moc_*.h
+**/qrc_*.cpp
+**/ui_*.h
+
+# OS
+.DS_Store
+

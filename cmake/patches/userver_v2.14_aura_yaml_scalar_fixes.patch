@@ -1,0 +1,236 @@
+diff --git a/core/src/engine/task/task_processor_config.cpp b/core/src/engine/task/task_processor_config.cpp
+index bc7401e44..c54d3db34 100644
+--- a/core/src/engine/task/task_processor_config.cpp
++++ b/core/src/engine/task/task_processor_config.cpp
+@@ -9,12 +9,29 @@
+ #include <userver/utils/trivial_map.hpp>
+ #include <userver/yaml_config/yaml_config.hpp>
+ 
++#include <cmath>
++#include <string>
++
+ USERVER_NAMESPACE_BEGIN
+ 
+ namespace engine {
+ 
+ namespace {
+ 
++std::size_t YamlAsSizeT(const yaml_config::YamlConfig& v) {
++    if (v.IsString()) {
++        return static_cast<std::size_t>(std::stoull(v.As<std::string>(), nullptr, 10));
++    }
++    if (v.IsDouble()) {
++        const double d = v.As<double>();
++        if (!std::isfinite(d) || std::trunc(d) != d || d < 0) {
++            throw std::runtime_error("size_t field: expected a non-negative whole number");
++        }
++        return static_cast<std::size_t>(d);
++    }
++    return v.As<std::size_t>();
++}
++
+ std::string GenerateWorkerThreadName(std::string_view tp_name) {
+     static constexpr std::string_view kExpectedSuffix = "-task-processor";
+     if (utils::text::EndsWith(tp_name, kExpectedSuffix)) {
+@@ -48,7 +65,7 @@ OsScheduling Parse(const yaml_config::YamlConfig& value, formats::parse::To<OsSc
+ TaskProcessorConfig Parse(const yaml_config::YamlConfig& value, formats::parse::To<TaskProcessorConfig>) {
+     TaskProcessorConfig config;
+     config.should_guess_cpu_limit = value["guess-cpu-limit"].As<bool>(config.should_guess_cpu_limit);
+-    config.worker_threads = value["worker_threads"].As<std::size_t>();
++    config.worker_threads = YamlAsSizeT(value["worker_threads"]);
+     config.thread_name = value["thread_name"].As<std::string>({});
+     config.os_scheduling = value["os-scheduling"].As<OsScheduling>(config.os_scheduling);
+     config.spinning_iterations = value["spinning-iterations"].As<int>(config.spinning_iterations);
+diff --git a/core/src/server/net/listener_config.cpp b/core/src/server/net/listener_config.cpp
+index 561cac7b1..cc9085225 100644
+--- a/core/src/server/net/listener_config.cpp
++++ b/core/src/server/net/listener_config.cpp
+@@ -1,6 +1,7 @@
+ #include "listener_config.hpp"
+ 
+ #include <charconv>
++#include <cmath>
+ #include <stdexcept>
+ #include <string>
+ 
+@@ -15,6 +16,41 @@ USERVER_NAMESPACE_BEGIN
+ namespace server::net {
+ 
+ namespace {
++
++uint16_t YamlAsUint16(const yaml_config::YamlConfig& value, uint16_t default_value) {
++    if (value.IsMissing()) {
++        return default_value;
++    }
++    if (value.IsString()) {
++        return static_cast<uint16_t>(std::stoul(value.As<std::string>(), nullptr, 10));
++    }
++    if (value.IsDouble()) {
++        const double d = value.As<double>();
++        if (!std::isfinite(d) || std::trunc(d) != d || d < 0 || d > 65535) {
++            throw std::runtime_error("listener port: invalid numeric value");
++        }
++        return static_cast<uint16_t>(d);
++    }
++    return value.As<uint16_t>(default_value);
++}
++
++std::size_t YamlAsSizeT(const yaml_config::YamlConfig& value, std::size_t default_value) {
++    if (value.IsMissing()) {
++        return default_value;
++    }
++    if (value.IsString()) {
++        return static_cast<std::size_t>(std::stoull(value.As<std::string>(), nullptr, 10));
++    }
++    if (value.IsDouble()) {
++        const double d = value.As<double>();
++        if (!std::isfinite(d) || std::trunc(d) != d || d < 0) {
++            throw std::runtime_error("listener config: invalid size value");
++        }
++        return static_cast<std::size_t>(d);
++    }
++    return value.As<std::size_t>(default_value);
++}
++
+ int ParseOctal(std::string_view s) {
+     int value{};
+     if (std::from_chars(s.data(), s.data() + s.size(), value, 8).ec != std::errc{}) {
+@@ -27,7 +63,7 @@ int ParseOctal(std::string_view s) {
+ PortConfig Parse(const yaml_config::YamlConfig& value, formats::parse::To<PortConfig>) {
+     PortConfig config;
+ 
+-    config.port = value["port"].As<uint16_t>(0);
++    config.port = YamlAsUint16(value["port"], 0);
+     config.address = value["address"].As<std::string>("::");
+     config.unix_socket_path = value["unix-socket"].As<std::string>("");
+     config.unix_socket_perms = static_cast<
+@@ -74,7 +110,7 @@ ListenerConfig Parse(const yaml_config::YamlConfig& value, formats::parse::To<Li
+ 
+     config.connection_config = value["connection"].As<ConnectionConfig>();
+     config.handler_defaults = value["handler-defaults"].As<request::HttpRequestConfig>();
+-    config.max_connections = value["max_connections"].As<size_t>(config.max_connections);
++    config.max_connections = YamlAsSizeT(value["max_connections"], config.max_connections);
+     config.shards = value["shards"].As<std::optional<size_t>>(config.shards);
+     config.task_processor = value["task_processor"].As<std::optional<std::string>>();
+     config.backlog = value["backlog"].As<int>(config.backlog);
+diff --git a/universal/src/yaml_config/impl/validate_static_config.cpp b/universal/src/yaml_config/impl/validate_static_config.cpp
+index 93e8b469c..dfc11d273 100644
+--- a/universal/src/yaml_config/impl/validate_static_config.cpp
++++ b/universal/src/yaml_config/impl/validate_static_config.cpp
+@@ -11,16 +11,39 @@
+ #include <userver/utils/text_light.hpp>
+ #include <userver/yaml_config/schema.hpp>
+ 
++#include <cerrno>
++#include <cstdlib>
++#include <cmath>
++#include <string>
++
+ USERVER_NAMESPACE_BEGIN
+ 
+ namespace yaml_config::impl {
+ 
+ namespace {
+ 
++bool IsLooseInteger(const yaml_config::YamlConfig& value) {
++    if (value.IsInt() || value.IsUInt64() || value.IsInt64()) {
++        return true;
++    }
++    if (value.IsDouble()) {
++        const double d = value.As<double>();
++        return std::isfinite(d) && std::trunc(d) == d;
++    }
++    if (value.IsString()) {
++        const auto s = value.As<std::string>();
++        char* end = nullptr;
++        errno = 0;
++        (void)std::strtoull(s.c_str(), &end, 10);
++        return errno == 0 && end == s.c_str() + s.size() && !s.empty();
++    }
++    return false;
++}
++
+ bool IsTypeValid(FieldType type, const yaml_config::YamlConfig& value) {
+     switch (type) {
+         case FieldType::kInteger:
+-            return value.IsInt() || value.IsUInt64() || value.IsInt64();
++            return IsLooseInteger(value);
+         case FieldType::kString:
+             return value.IsString();
+         case FieldType::kBool:
+diff --git a/universal/src/yaml_config/schema.cpp b/universal/src/yaml_config/schema.cpp
+index e19be03ef..d3936c8ca 100644
+--- a/universal/src/yaml_config/schema.cpp
++++ b/universal/src/yaml_config/schema.cpp
+@@ -13,12 +13,31 @@
+ #include <userver/utils/resources.hpp>
+ #include <userver/utils/trivial_map.hpp>
+ 
++#include <cstdlib>
++#include <string>
++
+ USERVER_NAMESPACE_BEGIN
+ 
+ namespace yaml_config {
+ 
+ namespace {
+ 
++std::optional<double> OptionalYamlDouble(const formats::yaml::Value& v) {
++    if (v.IsMissing() || v.IsNull()) {
++        return std::nullopt;
++    }
++    if (v.IsString()) {
++        return std::stod(v.As<std::string>());
++    }
++    if (v.IsDouble()) {
++        return v.As<double>();
++    }
++    if (v.IsInt() || v.IsInt64() || v.IsUInt64()) {
++        return static_cast<double>(v.As<int64_t>());
++    }
++    return v.As<double>();
++}
++
+ void CheckFieldsNames(const formats::yaml::Value& yaml_schema) {
+     static constexpr utils::TrivialSet kFieldNames = [](auto selector) {
+         return selector()
+@@ -205,13 +224,36 @@ Schema Parse(const formats::yaml::Value& schema, formats::parse::To<Schema>) {
+     result.type = schema["type"].As<FieldType>();
+     result.description = schema["description"].As<std::string>();
+ 
+-    result.additional_properties = schema["additionalProperties"].As<std::optional<std::variant<bool, SchemaPtr>>>();
++    const auto additional_properties = schema["additionalProperties"];
++    if (additional_properties.IsMissing() || additional_properties.IsNull()) {
++        result.additional_properties = std::nullopt;
++    } else if (additional_properties.IsObject()) {
++        result.additional_properties = additional_properties.As<SchemaPtr>();
++    } else if (additional_properties.IsBool()) {
++        result.additional_properties = additional_properties.As<bool>();
++    } else if (additional_properties.IsString()) {
++        const auto s = additional_properties.As<std::string>();
++        if (s == "true" || s == "True" || s == "TRUE" || s == "yes" || s == "Yes" || s == "on" || s == "On") {
++            result.additional_properties = true;
++        } else if (
++            s == "false" || s == "False" || s == "FALSE" || s == "no" || s == "No" || s == "off" || s == "Off"
++        ) {
++            result.additional_properties = false;
++        } else {
++            throw std::runtime_error(fmt::format(
++                "Schema field 'additionalProperties' must be object/bool or yes/no string at {}",
++                additional_properties.GetPath()
++            ));
++        }
++    } else {
++        result.additional_properties = additional_properties.As<bool>();
++    }
+     result.default_description = schema["defaultDescription"].As<std::optional<std::string>>();
+     result.properties = schema["properties"].As<std::optional<std::unordered_map<std::string, SchemaPtr>>>();
+     result.items = schema["items"].As<std::optional<SchemaPtr>>();
+     result.enum_values = schema["enum"].As<std::optional<std::unordered_set<std::string>>>();
+-    result.minimum = schema["minimum"].As<std::optional<double>>();
+-    result.maximum = schema["maximum"].As<std::optional<double>>();
++    result.minimum = OptionalYamlDouble(schema["minimum"]);
++    result.maximum = OptionalYamlDouble(schema["maximum"]);
+ 
+     result.min_items = schema["minItems"].As<std::optional<std::size_t>>();
+     result.max_items = schema["maxItems"].As<std::optional<std::size_t>>();

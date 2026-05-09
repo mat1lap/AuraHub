@@ -1,0 +1,56 @@
+# Minimal AuraCloud userver config (local dev)
+
+components_manager:
+  task_processors:
+    main-task-processor:
+      worker_threads: 4
+    fs-task-processor:
+      worker_threads: 2
+
+  default_task_processor: main-task-processor
+
+  components:
+    server:
+      listener:
+        port: 8080
+        task_processor: main-task-processor
+
+    logging:
+      fs-task-processor: fs-task-processor
+      loggers:
+        default:
+          file_path: '@stderr'
+          level: info
+          overflow_behavior: discard
+
+    testsuite-support: {}
+
+    dns-client:
+      fs-task-processor: fs-task-processor
+
+    # Postgres cluster component.
+    auracloud-db:
+      dbconnection#env: AURAHUB_PG_DSN
+      blocking_task_processor: fs-task-processor
+      dns_resolver: async
+
+    handler-auth-register:
+      path: /v1/auth/register
+      method: POST
+      task_processor: main-task-processor
+
+    handler-auth-login:
+      path: /v1/auth/login
+      method: POST
+      task_processor: main-task-processor
+
+    handler-settings:
+      path: /v1/settings
+      method: GET,PUT
+      task_processor: main-task-processor
+
+    handler-llm-proxy:
+      path: /v1/llm/proxy
+      method: POST
+      task_processor: main-task-processor
+
