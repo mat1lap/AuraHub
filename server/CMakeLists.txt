@@ -6,7 +6,11 @@ add_executable(auracloud
 )
 
 target_include_directories(auracloud PRIVATE include)
-target_link_libraries(auracloud PRIVATE aurahub_warnings)
+target_link_libraries(auracloud 
+  PRIVATE
+  nlohmann_json::nlohmann_json
+  aurahub_warnings
+)
 
 find_package(OpenSSL QUIET)
 if(OpenSSL_FOUND)
