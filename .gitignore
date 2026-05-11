@@ -19,3 +19,7 @@ out/
 # OS
 .DS_Store
 
+# MCP Assistant stdio test agent (repo-root artifacts)
+/aura_test_agent.log
+/parser.cpp
+
